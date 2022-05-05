@@ -1,0 +1,2 @@
+- model.model_path=model/librispeech_pretrained_v3.ckpt
+- audio_path=../data/test-clean/test-clean/61/70968/61-70968-0000.flac
