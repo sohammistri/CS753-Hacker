@@ -1,8 +1,11 @@
+from typing import Iterable
 import torch
 import torch.nn.functional as F
 import torchaudio
 import numpy as np
 import os
+import math
+from scipy.interpolate import interp1d
 
 SEGMENT_DURS = [20, 40, 60, 80, 100, 120, 140, 160, 200, 240, 280, 340, 400, 480, 580, 700, 840, 1000, 1200, 1440, 1720, 2060, 2480]
 
@@ -99,6 +102,89 @@ def rearrange_seq(response, seg_dur, seed, out_sample_rate=50, margin=1.0):
     return segments
 
 
+@torch.no_grad()
+def corr(a, b, axis=None):
+    """Compute Pearson's correlation along specified axis."""
+    a_mean = a.mean(axis=axis, keepdims=True)
+    b_mean = b.mean(axis=axis, keepdims=True)
+    a, b = (a - a_mean), (b - b_mean)
+    
+    a_sum2 = (a ** 2).sum(axis=axis, keepdims=True)
+    b_sum2 = (b ** 2).sum(axis=axis, keepdims=True)
+    if isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
+        a, b = (a / np.sqrt(a_sum2)), (b / np.sqrt(b_sum2))
+    elif isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
+        a, b = (a / torch.sqrt(a_sum2)), (b / torch.sqrt(b_sum2))
+    else:
+        raise TypeError(f'Incompatible types: {type(a)} and {type(b)}')
+    
+    rvals = (a * b).sum(axis=axis)
+    rvals[~torch.isfinite(rvals)] = 0
+
+    return rvals
+
+
+@torch.no_grad()
+def batch_corr(seq_A, seq_B, batch_size=None, device='cpu'):
+    """
+    Compute correlation of `seq_A` and `seq_B` along the first axis, performed in batches if `batch_size` is
+    set. Use batch processing if the large number of segments is causing memory issues.
+    seq_A: input sequence A.
+    seq_B: input sequence B.
+    """
+    if batch_size:
+        return torch.cat([
+            corr(
+                seq_A[:, k*batch_size:(k+1)*batch_size].to(device),
+                seq_B[:, k*batch_size:(k+1)*batch_size].to(device),
+                axis=0
+            ).cpu() for k in range(math.ceil(seq_A.shape[1] / batch_size))
+        ], axis=0).numpy()
+    else:
+        return corr(
+            seq_A.to(device),
+            seq_B.to(device),
+            axis=0
+        ).cpu().numpy()
+
+
+@torch.no_grad()
+def cross_context_corrs(sequence_pair, batch_size=None, device='cpu'):
+    return [
+            batch_corr(
+                seq_A,
+                seq_B,
+                batch_size=batch_size,
+                device=device
+            ) for seq_A, seq_B in sequence_pair
+        ]
+
+@torch.no_grad()
+def estimate_integration_window(cc_corrs, segment_durs, threshold=0.75):
+    """
+    Find when correlations (`cc_corrs`) cross the specified `threshold`.
+    corrs: correlation matrix for all segment durations, with shape [segments x channels]
+    """
+    if not isinstance(segment_durs, Iterable):
+        cc_corrs = [cc_corrs]
+        segment_durs = [segment_durs]
+    
+    cc_corrs = np.stack([np.nanmax(c, axis=0) for c in cc_corrs], axis=0)
+
+    seglens = np.log(segment_durs)
+    x_intrp = np.linspace(seglens.min(), seglens.max(), 1000)
+    
+    integration_windows = np.zeros(cc_corrs.shape[1])
+    for j in range(cc_corrs.shape[1]):
+        y_intrp = interp1d(
+            seglens,
+            np.convolve(np.pad(cc_corrs[:, j], [(1, 1)], 'edge'), [0.15, 0.7, 0.15], 'valid')
+        )(x_intrp)
+        
+        passthresh = np.where(y_intrp >= threshold)[0]
+        integration_windows[j] = round(np.exp(x_intrp[passthresh[0]]), 3) if len(passthresh) > 0 else np.nan
+    
+    return integration_windows
 
 def main(audio_folder, layer_num, seed1=1, seed2=2):
     waveforms, in_sample_rates = load_audio(audio_folder)
@@ -114,9 +200,17 @@ def main(audio_folder, layer_num, seed1=1, seed2=2):
         np.random.seed(seed2)
         central_seg_list = central_seg_list[np.random.permutation(len(central_seg_list))]
         final_segments_2 = crossfade(central_seg_list, in_sample_rates)
-        model_response1, model_response2 = model_output(layer, dur, final_segments_1, final_segments_2, isr)
+        
+        model = DeepSpeech().to("cpu").eval()
+        model.load_state_dict(torch.load('resources/deepspeech2-pretrained.ckpt')['state_dict'])
+        model_response1, model_response2 = model_output(0, dur, final_segments_1, final_segments_2, isr)
         SAR1 = rearrange_seq(model_response1, dur, seed=seed1)
         SAR2 = rearrange_seq(model_response2, dur, seed=seed2)
+
+        cross_context_corr = cross_context_corrs((SAR1, SAR2), batch_size=100)
+        int_window = estimate_integration_window(cross_context_corr, dur, threshold=0.75)
+
+        print(dur, int_window)
 
 
 
