@@ -13,9 +13,12 @@ import torchaudio
 
 
 SEGMENT_DURS = np.array([
-    0.02, 0.04, 0.06, 0.08, 0.10, 0.12, 0.14, 0.16, 0.20, 0.24, 0.28, 0.34,
-    0.40, 0.48, 0.58, 0.70, 0.84, 1.00, 1.20, 1.44, 1.72, 2.06, 2.48
-])
+    # 0.02, 0.04, 0.06, 0.08, 0.10#
+    # 0.12, 0.14, 0.16, 0.20]
+    0.24, 0.28, 0.34,
+    0.40, 0.48, 0.58, 0.70, 0.84, 1.00] 
+    # 1.20, 1.44, 1.72, 2.06, 2.48]
+)
 
 
 @torch.no_grad()
@@ -493,13 +496,13 @@ def estimate_layer_intwin(layer, stimuli, segment_durs, in_sr, out_sr):
     )
     print("rearrange done")
     
-    cross_context_corrs = cross_context_corrs(
+    cross_context_corr = cross_context_corrs(
         SAR_pairs, batch_size=100
     )
     print("cross context corrs done")
     
     integration_windows = estimate_integration_window(
-        cross_context_corrs, segment_durs, threshold=0.75
+        cross_context_corr, segment_durs, threshold=0.75
     )
     print("estimate integration done")
     return integration_windows
@@ -510,29 +513,36 @@ def main():
     segment_durs = SEGMENT_DURS
     out_sr = 50
 
+    f = open("layer-data.txt", "w")
+
     print('> Conv1... ', flush=True, end='')
     intwin_conv1_norm = estimate_layer_intwin(0, stimuli, segment_durs, in_sr, out_sr)
     print('Done.')
+    f.write(", ".join(str(x) for x in intwin_conv1_norm) + "\n")
 
-    # print('> LSTM2... ', flush=True, end='')
-    # intwin_lstm2_norm = estimate_layer_intwin(3, stimuli, segment_durs, in_sr, out_sr)
-    # print('Done.')
+    print('> CONV2... ', flush=True, end='')
+    intwin_conv2_norm = estimate_layer_intwin(1, stimuli, segment_durs, in_sr, out_sr)
+    print('Done.')
+    f.write(", ".join(str(x) for x in intwin_conv2_norm) + "\n")
 
-    # print('> LSTM4... ', flush=True, end='')
-    # intwin_lstm4_norm = estimate_layer_intwin(5, stimuli, segment_durs, in_sr, out_sr)
-    # print('Done.')
+    print('> LSTM1... ', flush=True, end='')
+    intwin_lstm1_norm = estimate_layer_intwin(2, stimuli, segment_durs, in_sr, out_sr)
+    print('Done.')
+    f.write(", ".join(str(x) for x in intwin_lstm1_norm) + "\n")
 
     plt.figure(figsize=(6, 4))
-    plt.hist(np.log10(intwin_conv1_norm), bins=50, alpha=0.8, label='Conv1')
-    # plt.hist(np.log10(intwin_lstm2_norm), bins=50, alpha=0.8, label='LSTM2')
-    # plt.hist(np.log10(intwin_lstm4_norm), bins=50, alpha=0.8, label='LSTM4')
+    # A[~np.isnan(A)]
+    plt.hist(np.log10(intwin_conv1_norm[~np.isnan(intwin_conv1_norm)]), bins=50, alpha=0.8, label='Conv1')
+    plt.hist(np.log10(intwin_conv2_norm[~np.isnan(intwin_conv2_norm)]), bins=50, alpha=0.8, label='LSTM2')
+    plt.hist(np.log10(intwin_lstm1_norm[~np.isnan(intwin_lstm1_norm)]), bins=50, alpha=0.8, label='LSTM4')
     plt.xticks(np.log10([0.02, 0.1, 0.5, 2.5]), [20, 100, 500, 2500], fontsize=16)
     plt.yticks([0, 200], fontsize=16)
     plt.xlabel('Integration window (ms)', fontsize=16)
     plt.ylabel('Density', fontsize=16)
     plt.legend(loc='upper left', fontsize=14)
     plt.xlim(np.log10([0.02, 2.5]))
-    plt.show()
+    # plt.show()
+    plt.savefig("res1.png")
 
 if __name__ == '__main__':
     main()

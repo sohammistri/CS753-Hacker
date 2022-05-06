@@ -131,3 +131,4 @@ dmypy.json
 PyTCI/
 deepspeech.pytorch/model
 code/segments-librispeech-1k
+code/resources

@@ -28,6 +28,7 @@ colorlog==6.6.0
 cycler==0.11.0
 debugpy==1.6.0
 decorator==5.1.1
+-e git+https://github.com/sohammistri/CS753-Hacker.git@35d745a6061f3d7d399fc4f2cb47b8ddd2ff38e9#egg=deepspeech_pytorch&subdirectory=deepspeech.pytorch
 defusedxml==0.7.1
 dnspython==2.2.1
 entrypoints==0.4
