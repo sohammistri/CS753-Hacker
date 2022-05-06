@@ -6,8 +6,9 @@ import numpy as np
 import os
 import math
 from scipy.interpolate import interp1d
+from model import DeepSpeech
 
-SEGMENT_DURS = [20, 40, 60, 80, 100, 120, 140, 160, 200, 240, 280, 340, 400, 480, 580, 700, 840, 1000, 1200, 1440, 1720, 2060, 2480]
+SEGMENT_DURS = [0.02, 0.04, 0.06, 0.08, 0.10, 0.12, 0.14, 0.16, 0.20, 0.24, 0.28, 0.34, 0.40, 0.48, 0.58, 0.70, 0.84, 1.00, 1.20, 1.44, 1.72, 2.06, 2.48]
 
 def load_audio(audio_dir):
     waveforms, sample_rates = zip(*[torchaudio.load(os.path.join(audio_dir,file), channels_first=False) for file in os.listdir(audio_dir)])
@@ -16,23 +17,23 @@ def load_audio(audio_dir):
     return waveforms, sample_rates
 
 
-def extract_central_segment(waveform, sample_rate, seg_dur, overlap_dur=20):
-    seg_len = np.round(sample_rate*seg_dur/1000)
-    overlap_len = np.round(sample_rate*overlap_dur/1000)
-    p2d = (0,0,np.floor(overlap_len/2),np.ceil(overlap_len/2))
+def extract_central_segment(waveform, sample_rate, seg_dur, overlap_dur=0.020):
+    seg_len = round(sample_rate*seg_dur)
+    overlap_len = round(sample_rate*overlap_dur)
+    p2d = (0,0,math.floor(overlap_len/2),math.ceil(overlap_len/2))
     waveform = F.pad(waveform, p2d)
     extra = len(waveform)-seg_len-overlap_len
     if extra>0:
-        central_seg = waveform[np.floor(extra/2):-np.ceil(extra/2)]
+        central_seg = waveform[math.floor(extra/2):-math.ceil(extra/2)]
     else:
         central_seg = waveform
     return central_seg
 
 
-def crossfade(segments, sample_rates, overlap_dur=20):
+def crossfade(segments, sample_rates, overlap_dur=0.020):
     pieces = []
     for i in range(len(segments)):
-        overlap_len = np.round(sample_rates[i]*overlap_dur/1000)
+        overlap_len = round(sample_rates[i]*overlap_dur)
         window = torch.hann_window(2*overlap_len + 3)[overlap_len+2:-1].reshape([-1]+[1]*(segments[i].ndim-1))
 
         if i > 0:
@@ -51,12 +52,13 @@ def crossfade(segments, sample_rates, overlap_dur=20):
 def model_output(layer, seg_dur, seq1, seq2, isr, out_sample_rate=50, block_size=48.0, context_size=8.0, device="cpu" ):
     assert len(seq1)==len(seq2)
 
-    seglen_in = np.round(seg_dur * isr/1000)
-    seglen_out = np.round(seg_dur * out_sample_rate/1000)
-    nbatch = np.floor(block_size / seg_dur)
-    ncontx = np.ceil(context_size / seg_dur)
+    seglen_in = round(seg_dur * isr)
+    seglen_out = round(seg_dur * out_sample_rate)
+    nbatch = math.floor(block_size / seg_dur)
+    ncontx = math.ceil(context_size / seg_dur)
     ntargt = nbatch - ncontx*2
-    num_batch = np.ceil(len(seq1)/ ntargt / seglen_in)
+    # print(nbatch, ncontx)
+    num_batch = math.ceil(len(seq1)/ ntargt / seglen_in)
     
     response1 = []
     response2 = []
@@ -84,15 +86,18 @@ def model_output(layer, seg_dur, seq1, seq2, isr, out_sample_rate=50, block_size
 
 
 def rearrange_seq(response, seg_dur, seed, out_sample_rate=50, margin=1.0):
+    # print(len(response), seg_dur)
     for sequence in response:
         target_dur = seg_dur
         # reshape sequence into separate segments
-        seglen_t = np.round(target_dur * out_sample_rate/1000)
-        seglen = np.round(seg_dur * out_sample_rate/1000)
-        segments = sequence.reshape((len(sequence)//seglen, seglen, sequence.shape[-1]))
+        seglen_t = round(target_dur * out_sample_rate)
+        seglen = round(seg_dur * out_sample_rate)
+        # print(sequence.size())
+        # print((len(sequence)//seglen, seglen, sequence.shape[-1]))
+        segments = sequence.reshape((len(sequence)//seglen, seglen, -1))
 
         # extract extra margins around shared segments in case of noncausality, etc.
-        nmargn = np.ceil(margin / seg_dur)
+        nmargn = math.ceil(margin / seg_dur)
         segments = torch.cat([torch.roll(segments, k, 0) for k in range(nmargn, -nmargn-1, -1)], dim=1)
         segments = segments[:, round(nmargn*seg_dur*out_sample_rate-margin*out_sample_rate):round(segments.shape[1]-nmargn*seg_dur*out_sample_rate+margin*out_sample_rate)]
 
@@ -176,9 +181,11 @@ def estimate_integration_window(cc_corrs, segment_durs, threshold=0.75):
     
     integration_windows = np.zeros(cc_corrs.shape[1])
     for j in range(cc_corrs.shape[1]):
+        # print(cc_corrs[:, j], np.pad(cc_corrs[:, j][0], (1, 1), 'edge'))
+        print(seglens, np.convolve(np.pad(cc_corrs[:, j][0], (1, 1), 'edge'), [0.15, 0.7, 0.15], 'valid'))
         y_intrp = interp1d(
             seglens,
-            np.convolve(np.pad(cc_corrs[:, j], [(1, 1)], 'edge'), [0.15, 0.7, 0.15], 'valid')
+            np.convolve(np.pad(cc_corrs[:, j][0], (1, 1), 'edge'), [0.15, 0.7, 0.15], 'valid')
         )(x_intrp)
         
         passthresh = np.where(y_intrp >= threshold)[0]
@@ -188,10 +195,11 @@ def estimate_integration_window(cc_corrs, segment_durs, threshold=0.75):
 
 def main(audio_folder, layer_num, seed1=1, seed2=2):
     waveforms, in_sample_rates = load_audio(audio_folder)
-    if len(set(in_sample_rates)==1):
+    if len(set(in_sample_rates))==1:
         isr = in_sample_rates[0]
 
-    for dur in SEGMENT_DURS:
+    cross_context_list = []
+    for i, dur in list(enumerate(SEGMENT_DURS)):
         central_seg_list = [extract_central_segment(x, isr, dur) for x in waveforms]
         central_seg_list = torch.stack(central_seg_list, dim=0)
         np.random.seed(seed1)
@@ -202,16 +210,22 @@ def main(audio_folder, layer_num, seed1=1, seed2=2):
         final_segments_2 = crossfade(central_seg_list, in_sample_rates)
         
         model = DeepSpeech().to("cpu").eval()
-        model.load_state_dict(torch.load('resources/deepspeech2-pretrained.ckpt')['state_dict'])
-        model_response1, model_response2 = model_output(0, dur, final_segments_1, final_segments_2, isr)
+        model.load_state_dict(torch.load('resources/deepspeech2-pretrained.ckpt', map_location=torch.device('cpu'))['state_dict'])
+        model_response1, model_response2 = model_output(model.activation_fx(layer_num), dur, final_segments_1, final_segments_2, isr)
+
+        print(len(model_response1), dur)
+
         SAR1 = rearrange_seq(model_response1, dur, seed=seed1)
         SAR2 = rearrange_seq(model_response2, dur, seed=seed2)
 
-        cross_context_corr = cross_context_corrs((SAR1, SAR2), batch_size=100)
-        int_window = estimate_integration_window(cross_context_corr, dur, threshold=0.75)
+        cross_context_corr = cross_context_corrs([(SAR1, SAR2)], batch_size=100)
+        # print(cross_context_corr[0].shape)
+        # cross_context_list[:, i] = cross_context_corr[0][:,0]
+        cross_context_list.append(cross_context_corr[0])
 
-        print(dur, int_window)
+    int_window = estimate_integration_window(cross_context_list, SEGMENT_DURS, threshold=0.75)
 
+    print(int_window)
 
-
-
+if __name__ == '__main__':
+    main("segments-librispeech-1k", 0)

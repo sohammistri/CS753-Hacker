@@ -127,3 +127,7 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+/data
+PyTCI/
+deepspeech.pytorch/model
+code/segments-librispeech-1k
