@@ -2,13 +2,15 @@ import sys
 sys.path.append('../code')
 import tci
 import utils
+import numpy as np
+import torch.nn.functional as F
 
-file_path = "../data/segments-librispeech-1k/clip_0000_WERE.wav"
+audio_path = "sample"
 
-wf, sr = tci.load_audio(file_path)
-print(wf[:,1:10])
-utils.print_stats(wf, sample_rate=sr)
-utils.plot_waveform(wf, sr)
-utils.plot_specgram(wf, sr)
-
+wf, sr = tci.load_audio(audio_path)
+wf = list(zip(wf,sr))[0][0]
+print(wf.size())
+p2d = (0,0,10,10)
+wf = F.pad(wf, p2d)
+print(wf[100:-100])
 
